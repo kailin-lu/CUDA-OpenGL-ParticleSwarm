@@ -6,7 +6,8 @@
 #include <ctime>
 
 void getCUDAError(char const *msg); 
-void calcCUDA(cudaGraphicsResource *VBOparticles_CUDA, int NParticles); 
+void calcCUDA(float *devPtr, int NParticles);
 
 __global__ void init_kernel(curandState *state, long seed); 
-__global__ void createVertices(float *positions, curandState *state, int N); 
+__global__ void createVertices(float *devPtr, int N); 
+__device__ __host__ float func(float x, float y);
