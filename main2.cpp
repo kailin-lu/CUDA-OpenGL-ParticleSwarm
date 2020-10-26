@@ -3,15 +3,16 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include <unordered_map>
-// #include <cuda_runtime.h> 
-// #include <cuda_gl_interop.h>
 #include <random>
+#include <stdlib.h>
 #include "external/glm/glm.hpp"
 #include "external/glm/gtc/matrix_transform.hpp"
 #include "external/glm/gtc/type_ptr.hpp"
 
-// #include "kernel.h"
+#include "kernel.h"
+#include <cuda_runtime.h> 
+#include <cuda_gl_interop.h>
+
 #include "shader.h"
 #include "camera.h"
 
@@ -20,12 +21,11 @@
  ***********************/ 
 const int SCR_HEIGHT = 600; 
 const int SCR_WIDTH = 800; 
-const int surfaceN = 25; 
+const int surfaceN = 50; 
 const int N = surfaceN * surfaceN; 
 float step = 2.0f / static_cast <float>(surfaceN); 
 std::string projectName = "OpenGL Project"; 
 GLFWwindow *window; 
-// cudaDeviceProp prop; 
 
 // Buffers for drawing function surface 
 GLuint VAO, VBO, EBO; 
@@ -33,7 +33,12 @@ float position[N*3];
 unsigned int position_indices[N * 4]; 
 
 // Buffers for CUDA particle data 
+cudaDeviceProp prop; 
 GLuint VAOparticles, VBOparticles; 
+cudaGraphicsResource *VBOparticles_CUDA; 
+const int NParticles = 2000; 
+
+
 
 // camera
 Camera camera(glm::vec3(0.0f, 0.0f, 3.0f)); 
@@ -47,9 +52,11 @@ float deltaTime = 0.0f;
  * Prototypes *
  **************/ 
 void initWindow(std::string projectName);
-void mainLoop(Shader shaderPoints); 
+void mainLoop(Shader shaderSurface, Shader shaderPoints); 
 float func(float x, float y);
+void initSurface(); 
 void initLines(); 
+void initCUDA(); 
 void generateIndices(); 
 void end(); 
 
@@ -81,29 +88,15 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
+    // Register CUDA resources 
+    initCUDA(); 
+
     // Initialize function positions 
-    initLines(); 
-    generateIndices(); 
-    glGenVertexArrays(1, &VAO); 
-    glGenBuffers(1, &VBO); 
-    glGenBuffers(1, &EBO); 
-    
-    glBindVertexArray(VAO); 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO); 
-    glBufferData(GL_ARRAY_BUFFER, sizeof(position), position, GL_STATIC_DRAW);
+    initSurface(); 
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); 
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(position_indices), position_indices, GL_STATIC_DRAW); 
- 
-    glVertexAttribPointer(0,3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); 
-    glEnableVertexAttribArray(0);
-    
-    glEnable(GL_DEPTH_TEST); 
-    glEnable(GL_PRIMITIVE_RESTART); 
-    glad_glPrimitiveRestartIndex(0xffff); 
-
-    Shader shaderPoints("shaders/vertex.glsl", "shaders/fragment.glsl"); 
-    mainLoop(shaderPoints);
+    Shader shaderSurface("shaders/vertex.glsl", "shaders/fragment.glsl"); 
+    Shader shaderPoints("shaders/vertex.glsl", "shaders/fragment_particle.glsl"); 
+    mainLoop(shaderSurface, shaderPoints);
 
     end(); 
     return 0; 
@@ -118,7 +111,39 @@ void initWindow(std::string projectName) {
     window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, projectName.c_str(), NULL, NULL); 
 }
 
-void mainLoop(Shader shaderPoints) {
+
+void initCUDA() {
+    cudaSetDevice(0);
+    cudaGetDeviceProperties(&prop, 0); 
+    getCUDAError("No device properties"); 
+    
+    // Initialize randomly 
+    std::default_random_engine generator; 
+    std::uniform_real_distribution<float> distribution(-1.0,1.0); 
+
+    float vertices[3 * NParticles];  
+    for (int i = 0; i < NParticles; i++) {
+        vertices[3 * i + 0] = distribution(generator);
+        vertices[3 * i + 1] = distribution(generator);
+        vertices[3 * i + 2] = func(vertices[3 * i + 0], vertices[3 * i + 1]);
+    }
+
+    glGenVertexArrays(1, &VAOparticles); 
+    glGenBuffers(1, &VBOparticles); 
+    
+    glBindVertexArray(VAOparticles); 
+    glBindBuffer(GL_ARRAY_BUFFER, VBOparticles); 
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW); 
+    
+    glVertexAttribPointer(0,3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); 
+    glEnableVertexAttribArray(0);
+
+    // cudaGraphicsGLRegisterBuffer(&VBOparticles_CUDA, VBOparticles, cudaGraphicsMapFlagsWriteDiscard);
+    // getCUDAError("CUDA Graphics GL Register Buffer"); 
+}
+
+
+void mainLoop(Shader shaderSurface, Shader shaderPoints) {
     // for calculating framerate 
     int frame = 0; 
     double fps = 0.; 
@@ -145,7 +170,7 @@ void mainLoop(Shader shaderPoints) {
 
         std::ostringstream ss;
         ss << projectName << " "; 
-        // ss << " " << prop.name << " ";
+        ss << " " << prop.name << " ";
         ss.precision(1); 
         ss << std::fixed << fps << " fps"; 
         glfwSetWindowTitle(window, ss.str().c_str());
@@ -154,25 +179,59 @@ void mainLoop(Shader shaderPoints) {
         glClearColor(0.0f, 0.1f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
 
-        glBindVertexArray(VAO); 
-        glPointSize(1.0f); 
-        glDrawElements(GL_LINE_STRIP_ADJACENCY, 3*N, GL_UNSIGNED_INT, 0); 
-
-        shaderPoints.use(); 
+        shaderSurface.use(); 
 
         // Set camera 
-        glm::mat4 view          = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
-        glm::mat4 projection    = glm::mat4(1.0f);
         glm::mat4 model = glm::mat4(1.0f); 
-        projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-        view = camera.GetViewMatrix(); 
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
+        glm::mat4 view = camera.GetViewMatrix(); 
 
+        shaderSurface.setMat4("model", model); 
+        shaderSurface.setMat4("projection", projection); // note: currently we set the projection matrix each frame, but since the projection matrix rarely changes it's often best practice to set it outside the main loop only once.
+        shaderSurface.setMat4("view", view);
+        
+        // draw surface 
+        glBindVertexArray(VAO); 
+        glLineWidth(0.1f); 
+        glDrawElements(GL_LINE_STRIP_ADJACENCY, 3*N, GL_UNSIGNED_INT, 0); 
+
+        // Set particle shader 
+        shaderPoints.use(); 
         shaderPoints.setMat4("model", model); 
         shaderPoints.setMat4("projection", projection); // note: currently we set the projection matrix each frame, but since the projection matrix rarely changes it's often best practice to set it outside the main loop only once.
         shaderPoints.setMat4("view", view);
+
+        //  draw particles 
+        glBindVertexArray(VAOparticles); 
+        glPointSize(2.0f); 
+        glDrawArrays(GL_POINTS, 0, NParticles); 
+
         glfwSwapBuffers(window); 
         glfwPollEvents(); 
     }
+}
+
+// Initialize function surface 
+void initSurface() {
+    initLines(); 
+    generateIndices(); 
+    glGenVertexArrays(1, &VAO); 
+    glGenBuffers(1, &VBO); 
+    glGenBuffers(1, &EBO); 
+    
+    glBindVertexArray(VAO); 
+    glBindBuffer(GL_ARRAY_BUFFER, VBO); 
+    glBufferData(GL_ARRAY_BUFFER, sizeof(position), position, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); 
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(position_indices), position_indices, GL_STATIC_DRAW); 
+ 
+    glVertexAttribPointer(0,3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); 
+    glEnableVertexAttribArray(0);
+    
+    glEnable(GL_DEPTH_TEST); 
+    glEnable(GL_PRIMITIVE_RESTART); 
+    glad_glPrimitiveRestartIndex(0xffff); 
 }
 
 // Initialize values in the function lines 
@@ -192,6 +251,7 @@ void initLines() {
     }
 }
 
+// Draw lines across x axis and y axis to create surface 
 void generateIndices() {
     int k = 0; 
     for (int i = 0; i < surfaceN; i++) {
@@ -287,7 +347,10 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 
 
 void end() {
+    cudaGraphicsUnregisterResource(VBOparticles_CUDA);
     glDeleteVertexArrays(1, &VAO);
+    glDeleteVertexArrays(1, &VAOparticles);
     glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &VBOparticles); 
     glfwTerminate(); 
 }
