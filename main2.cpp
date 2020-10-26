@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <unordered_map>
 // #include <cuda_runtime.h> 
 // #include <cuda_gl_interop.h>
 #include <random>
@@ -21,14 +22,21 @@ const int SCR_HEIGHT = 600;
 const int SCR_WIDTH = 800; 
 const int surfaceN = 25; 
 const int N = surfaceN * surfaceN; 
+float step = 2.0f / static_cast <float>(surfaceN); 
 std::string projectName = "OpenGL Project"; 
 GLFWwindow *window; 
 // cudaDeviceProp prop; 
-GLuint VAO, VBO; 
+
+// Buffers for drawing function surface 
+GLuint VAO, VBO, EBO; 
 float position[N*3]; 
+unsigned int position_indices[N * 4]; 
+
+// Buffers for CUDA particle data 
+GLuint VAOparticles, VBOparticles; 
 
 // camera
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(glm::vec3(0.0f, 0.0f, 3.0f)); 
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
@@ -42,6 +50,8 @@ void initWindow(std::string projectName);
 void mainLoop(Shader shaderPoints); 
 float func(float x, float y);
 void initLines(); 
+void generateIndices(); 
+void end(); 
 
 void processInput(GLFWwindow *window); 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height); 
@@ -73,22 +83,29 @@ int main(int argc, char *argv[]) {
 
     // Initialize function positions 
     initLines(); 
+    generateIndices(); 
     glGenVertexArrays(1, &VAO); 
     glGenBuffers(1, &VBO); 
+    glGenBuffers(1, &EBO); 
     
     glBindVertexArray(VAO); 
     glBindBuffer(GL_ARRAY_BUFFER, VBO); 
     glBufferData(GL_ARRAY_BUFFER, sizeof(position), position, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO); 
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(position_indices), position_indices, GL_STATIC_DRAW); 
+ 
     glVertexAttribPointer(0,3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0); 
     glEnableVertexAttribArray(0);
     
     glEnable(GL_DEPTH_TEST); 
+    glEnable(GL_PRIMITIVE_RESTART); 
+    glad_glPrimitiveRestartIndex(0xffff); 
+
     Shader shaderPoints("shaders/vertex.glsl", "shaders/fragment.glsl"); 
     mainLoop(shaderPoints);
 
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glfwTerminate(); 
+    end(); 
     return 0; 
 }
 
@@ -139,8 +156,7 @@ void mainLoop(Shader shaderPoints) {
 
         glBindVertexArray(VAO); 
         glPointSize(1.0f); 
-        // glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        glDrawArrays(GL_POINTS, 0, N);
+        glDrawElements(GL_LINE_STRIP_ADJACENCY, 3*N, GL_UNSIGNED_INT, 0); 
 
         shaderPoints.use(); 
 
@@ -161,16 +177,11 @@ void mainLoop(Shader shaderPoints) {
 
 // Initialize values in the function lines 
 void initLines() {
-    float step = 2.0f / static_cast <float>(surfaceN); 
     float i_pos = -1.0f;
     float j_pos = -1.0f; 
-    // std::default_random_engine generator; 
-    // std::uniform_real_distribution<float> distribution(-1.0,1.0); 
 
     for (int i = 0; i < surfaceN; i++) {
         for (int j = 0; j < surfaceN; j++) {
-            // i_pos = distribution(generator); 
-            // j_pos = distribution(generator); 
             position[3 * (surfaceN * i + j) + 0] = i_pos;  // x
             position[3 * (surfaceN * i + j) + 1] = j_pos;  // y
             position[3 * (surfaceN * i + j) + 2] = func(i_pos, j_pos);  // z
@@ -181,9 +192,49 @@ void initLines() {
     }
 }
 
+void generateIndices() {
+    int k = 0; 
+    for (int i = 0; i < surfaceN; i++) {
+        for (int j = 0; j < surfaceN; j++) {
+            position_indices[k] = surfaceN * j + i; 
+            k += 1; 
+        }
+        position_indices[k] = 0xffff; 
+        k += 1; 
+    }
+
+    for (int i = 0; i < surfaceN; i++) {
+        for (int j = 0; j < surfaceN; j++) {
+            position_indices[k] = surfaceN * i + j; 
+            k += 1;
+        }
+        position_indices[k] = 0xffff; 
+        k += 1; 
+    }
+
+}
+
+// // return index of position array where first two values match x and y
+// int find(float x, float y) {
+//     for (int i = 0; i < N; i++) {
+//         if (position[3 * i + 0] == x && position[3 * i + 1] == y) {
+//             return i; 
+//         }
+//     }
+//     return -1; 
+// }
+
+// parabaloid 
 float func(float x, float y) {
     return pow(x, 2) + pow(y, 2); 
 }
+
+// // rastrigin 
+// float func(float x, float y) {
+//     int A = 10; 
+//     int n = 2; 
+//     return A * 2 + (pow(x, 2) - A * cos(2 * M_PI * x)) + (pow(y, 2) - A * cos(2 * M_PI * y));
+// }
 
 // callbacks
 void processInput(GLFWwindow *window) {
@@ -232,4 +283,11 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     camera.ProcessMouseScroll(yoffset);
+}
+
+
+void end() {
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+    glfwTerminate(); 
 }
